@@ -21,6 +21,8 @@ import (
 	"github.com/cilium/cilium/api/v1/models"
 	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/policy"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -66,4 +68,10 @@ type StoreGetter interface {
 	// update objects into k8s as well as the objects returned by these stores
 	// should only be used for reading.
 	GetK8sStore(name string) cache.Store
+}
+
+// PolicyGetter ...
+type PolicyGetter interface {
+	GetL3L4IngressPolicies(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch
+	GetL3L4EgressPolicies(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch
 }

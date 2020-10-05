@@ -814,6 +814,24 @@ func (l4 L4PolicyMap) HasProxylibRedirect() bool {
 	return false
 }
 
+func (l4 L4PolicyMap) containsL3L4(labels labels.LabelArray, port string) (bool, api.Decision) {
+	filter, match := l4[port]
+	if !match {
+		return false, api.Denied
+	}
+
+	matches, isDeny := filter.matchesLabels(labels)
+	if !matches {
+		return false, api.Denied
+	}
+
+	if isDeny {
+		return true, api.Denied
+	}
+
+	return true, api.Allowed
+}
+
 // containsAllL3L4 checks if the L4PolicyMap contains all L4 ports in `ports`.
 // For L4Filters that specify ToEndpoints or FromEndpoints, uses `labels` to
 // determine whether the policy allows L4 communication between the corresponding
@@ -831,17 +849,8 @@ func (l4 L4PolicyMap) containsAllL3L4(labels labels.LabelArray, ports []*models.
 		return api.Allowed
 	}
 
-	// Check L3-only filters first.
-	filter, match := l4[api.PortProtocolAny]
-	if match {
-
-		matches, isDeny := filter.matchesLabels(labels)
-		switch {
-		case matches && isDeny:
-			return api.Denied
-		case matches:
-			return api.Allowed
-		}
+	if matches, decision := l4.containsL3L4(labels, api.PortProtocolAny); matches {
+		return decision
 	}
 
 	for _, l4Ctx := range ports {
@@ -850,35 +859,78 @@ func (l4 L4PolicyMap) containsAllL3L4(labels labels.LabelArray, ports []*models.
 			portStr = fmt.Sprintf("%d", l4Ctx.Port)
 		}
 		lwrProtocol := l4Ctx.Protocol
-		var isUDPDeny, isTCPDeny bool
 		switch lwrProtocol {
 		case "", models.PortProtocolANY:
 			tcpPort := fmt.Sprintf("%s/TCP", portStr)
-			tcpFilter, tcpmatch := l4[tcpPort]
-			if tcpmatch {
-				tcpmatch, isTCPDeny = tcpFilter.matchesLabels(labels)
-			}
+			tcpMatch, tcpDecision := l4.containsL3L4(labels, tcpPort)
+
 			udpPort := fmt.Sprintf("%s/UDP", portStr)
-			udpFilter, udpmatch := l4[udpPort]
-			if udpmatch {
-				udpmatch, isUDPDeny = udpFilter.matchesLabels(labels)
-			}
-			if (!tcpmatch && !udpmatch) || (isTCPDeny && isUDPDeny) {
+			udpMatch, udpDecision := l4.containsL3L4(labels, udpPort)
+
+			if (!tcpMatch && !udpMatch) || (tcpDecision == api.Denied && udpDecision == api.Denied) {
 				return api.Denied
 			}
 		default:
 			port := fmt.Sprintf("%s/%s", portStr, lwrProtocol)
-			filter, match := l4[port]
-			if !match {
-				return api.Denied
-			}
-			matches, isDeny := filter.matchesLabels(labels)
-			if !matches || isDeny {
+			matches, decision := l4.containsL3L4(labels, port)
+			if !matches || decision == api.Denied {
 				return api.Denied
 			}
 		}
 	}
 	return api.Allowed
+}
+
+type L4PolicyMatch struct {
+	DerivedFromRules labels.LabelArrayList `json:"-"`
+	PortProtocol     string
+	Decision         api.Decision
+}
+
+func (l4 L4PolicyMap) matchAllL3L4(labels labels.LabelArray, ports []*models.Port) []L4PolicyMatch {
+	if len(l4) == 0 {
+		return nil
+	}
+
+	policies := make([]L4PolicyMatch, 0)
+	if matches, decision := l4.containsL3L4(labels, api.PortProtocolAny); matches {
+		policies = append(policies, L4PolicyMatch{
+			l4[api.PortProtocolAny].DerivedFromRules, api.PortProtocolAny, decision,
+		})
+	}
+
+	for _, l4Ctx := range ports {
+		portStr := l4Ctx.Name
+		if !iana.IsSvcName(portStr) {
+			portStr = fmt.Sprintf("%d", l4Ctx.Port)
+		}
+		lwrProtocol := l4Ctx.Protocol
+		switch lwrProtocol {
+		case "", models.PortProtocolANY:
+			tcpPort := fmt.Sprintf("%s/TCP", portStr)
+			if matches, decision := l4.containsL3L4(labels, tcpPort); matches {
+				policies = append(policies, L4PolicyMatch{
+					l4[tcpPort].DerivedFromRules, tcpPort, decision,
+				})
+			}
+
+			udpPort := fmt.Sprintf("%s/UDP", portStr)
+			if matches, decision := l4.containsL3L4(labels, udpPort); matches {
+				policies = append(policies, L4PolicyMatch{
+					l4[udpPort].DerivedFromRules, udpPort, decision,
+				})
+			}
+		default:
+			port := fmt.Sprintf("%s/%s", portStr, lwrProtocol)
+			if matches, decision := l4.containsL3L4(labels, port); matches {
+				policies = append(policies, L4PolicyMatch{
+					l4[port].DerivedFromRules, port, decision,
+				})
+			}
+		}
+	}
+
+	return policies
 }
 
 type L4Policy struct {

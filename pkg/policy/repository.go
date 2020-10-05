@@ -334,6 +334,56 @@ func (p *Repository) AllowsEgressRLocked(ctx *SearchContext) api.Decision {
 	return verdict
 }
 
+func (p *Repository) MatchIngressRLocked(ctx *SearchContext) (matches []L4PolicyMatch) {
+	// Lack of DPorts in the SearchContext means L3-only search
+	if len(ctx.DPorts) == 0 {
+		newCtx := *ctx
+		newCtx.DPorts = []*models.Port{{
+			Port:     0,
+			Protocol: models.PortProtocolANY,
+		}}
+		ctx = &newCtx
+	}
+
+	ingressPolicy, err := p.ResolveL4IngressPolicy(ctx)
+	if err != nil {
+		log.WithError(err).Warn("Evaluation error while resolving L4 ingress policy")
+	}
+
+	if err == nil {
+		matches = ingressPolicy.matchAllL3L4(ctx.From, ctx.DPorts)
+	}
+
+	ingressPolicy.Detach(p.GetSelectorCache())
+
+	return
+}
+
+func (p *Repository) MatchEgressRLocked(ctx *SearchContext) (matches []L4PolicyMatch) {
+	// Lack of DPorts in the SearchContext means L3-only search
+	if len(ctx.DPorts) == 0 {
+		newCtx := *ctx
+		newCtx.DPorts = []*models.Port{{
+			Port:     0,
+			Protocol: models.PortProtocolANY,
+		}}
+		ctx = &newCtx
+	}
+
+	egressPolicy, err := p.ResolveL4EgressPolicy(ctx)
+	if err != nil {
+		log.WithError(err).Warn("Evaluation error while resolving L4 ingress policy")
+	}
+
+	if err == nil {
+		matches = egressPolicy.matchAllL3L4(ctx.To, ctx.DPorts)
+	}
+
+	egressPolicy.Detach(p.GetSelectorCache())
+
+	return
+}
+
 // SearchRLocked searches the policy repository for rules which match the
 // specified labels and will return an array of all rules which matched.
 func (p *Repository) SearchRLocked(lbls labels.LabelArray) api.Rules {

@@ -29,6 +29,8 @@ import (
 	poolTypes "github.com/cilium/cilium/pkg/hubble/relay/pool/types"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/policy"
 
 	"github.com/golang/protobuf/ptypes/timestamp"
 	"google.golang.org/grpc"
@@ -351,6 +353,28 @@ var NoopIdentityGetter = FakeIdentityGetter{
 	OnGetIdentity: func(securityIdentity uint32) (*models.Identity, error) {
 		return &models.Identity{}, nil
 	},
+}
+
+// FakePolicyGetter is used for unit tests that need PolicyGetter.
+type FakePolicyGetter struct {
+	OnGetL3L4IngressPolicies func(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch
+	OnGetL3L4EgressPolicies  func(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch
+}
+
+// GetL3L4IngressPolicies implements PolicyGetter.GetL3L4IngressPolicies.
+func (f *FakePolicyGetter) GetL3L4IngressPolicies(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch {
+	if f.OnGetL3L4IngressPolicies != nil {
+		return f.OnGetL3L4IngressPolicies(from, to, ports)
+	}
+	panic("OnGetL3L4IngressPolicies is not set")
+}
+
+// GetL3L4EgressPolicies implements PolicyGetter.GetL3L4EgressPolicies.
+func (f *FakePolicyGetter) GetL3L4EgressPolicies(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch {
+	if f.OnGetL3L4EgressPolicies != nil {
+		return f.OnGetL3L4EgressPolicies(from, to, ports)
+	}
+	panic("OnGetL3L4EgressPolicies is not set")
 }
 
 // FakeFlow implements v1.Flow for unit tests. All interface methods

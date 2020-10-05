@@ -24,13 +24,18 @@ import (
 	"strings"
 
 	pb "github.com/cilium/cilium/api/v1/flow"
+	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/hubble/parser/errors"
 	"github.com/cilium/cilium/pkg/hubble/parser/getters"
 	"github.com/cilium/cilium/pkg/identity"
+	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
+	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/monitor"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
+	"github.com/cilium/cilium/pkg/policy"
+	policyAPI "github.com/cilium/cilium/pkg/policy/api"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -45,6 +50,7 @@ type Parser struct {
 	dnsGetter      getters.DNSGetter
 	ipGetter       getters.IPGetter
 	serviceGetter  getters.ServiceGetter
+	policyGetter   getters.PolicyGetter
 
 	// TODO: consider using a pool of these
 	packet *packet
@@ -72,6 +78,7 @@ func New(
 	dnsGetter getters.DNSGetter,
 	ipGetter getters.IPGetter,
 	serviceGetter getters.ServiceGetter,
+	policyGetter getters.PolicyGetter,
 ) (*Parser, error) {
 	packet := &packet{}
 	packet.decLayer = gopacket.NewDecodingLayerParser(
@@ -86,6 +93,7 @@ func New(
 		identityGetter: identityGetter,
 		ipGetter:       ipGetter,
 		serviceGetter:  serviceGetter,
+		policyGetter:   policyGetter,
 		packet:         packet,
 	}, nil
 }
@@ -189,6 +197,7 @@ func (p *Parser) Decode(data []byte, decoded *pb.Flow) error {
 	decoded.DestinationService = destinationService
 	decoded.PolicyMatchType = decodePolicyMatchType(pvn)
 	decoded.Summary = summary
+	decoded.Policies = p.resolvePolicies(decoded)
 
 	return nil
 }
@@ -199,6 +208,69 @@ func (p *Parser) resolveNames(epID uint32, ip net.IP) (names []string) {
 	}
 
 	return nil
+}
+
+func (p *Parser) resolvePolicies(fl *pb.Flow) []string {
+	if fl.PolicyMatchType == monitorAPI.PolicyMatchNone {
+		return nil
+	}
+
+	if fl.PolicyMatchType == monitorAPI.PolicyMatchAll {
+		return nil
+	}
+
+	verdict := policyAPI.Allowed
+	if fl.Verdict == pb.Verdict_DROPPED {
+		verdict = policyAPI.Denied
+	}
+
+	fromLbl := labels.NewSelectLabelArrayFromModel(fl.Source.Labels)
+	toLbl := labels.NewSelectLabelArrayFromModel(fl.Destination.Labels)
+	var ports []*models.Port
+	switch fl.L4.GetProtocol().(type) {
+	case *pb.Layer4_TCP:
+		ports = []*models.Port{{
+			Port:     uint16(fl.L4.GetTCP().DestinationPort),
+			Protocol: models.PortProtocolTCP,
+		}}
+	case *pb.Layer4_UDP:
+		ports = []*models.Port{{
+			Port:     uint16(fl.L4.GetUDP().DestinationPort),
+			Protocol: models.PortProtocolUDP,
+		}}
+	}
+
+	var matches []policy.L4PolicyMatch
+	if fl.TrafficDirection == pb.TrafficDirection_EGRESS {
+		matches = p.policyGetter.GetL3L4EgressPolicies(fromLbl, toLbl, ports)
+	} else {
+		matches = p.policyGetter.GetL3L4IngressPolicies(fromLbl, toLbl, ports)
+	}
+
+	var l3Matches, l4Matches []string
+	for _, match := range matches {
+		if match.Decision != verdict {
+			continue
+		}
+
+		for _, labels := range match.DerivedFromRules {
+			if match.PortProtocol == models.PortProtocolANY {
+				l3Matches = append(l3Matches, labels.Get("k8s."+k8sConst.PolicyLabelName))
+			} else {
+				l4Matches = append(l4Matches, labels.Get("k8s."+k8sConst.PolicyLabelName))
+			}
+		}
+	}
+
+	if fl.PolicyMatchType == monitorAPI.PolicyMatchL3Only {
+		return l3Matches
+	}
+
+	if fl.PolicyMatchType == monitorAPI.PolicyMatchL4Only {
+		return l4Matches
+	}
+
+	return append(l3Matches, l4Matches...)
 }
 
 func filterCIDRLabels(log logrus.FieldLogger, labels []string) []string {

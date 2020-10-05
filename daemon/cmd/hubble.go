@@ -40,10 +40,12 @@ import (
 	"github.com/cilium/cilium/pkg/identity"
 	identitymodel "github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/ipcache"
+	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/policy"
 
 	"github.com/go-openapi/strfmt"
 	"github.com/sirupsen/logrus"
@@ -108,7 +110,7 @@ func (d *Daemon) launchHubble() {
 		}
 	}
 
-	payloadParser, err := parser.New(logger, d, d, d, d, d)
+	payloadParser, err := parser.New(logger, d, d, d, d, d, d)
 	if err != nil {
 		logger.WithError(err).Error("Failed to initialize Hubble")
 		return
@@ -330,4 +332,14 @@ func (d *Daemon) LookupSecIDByIP(ip net.IP) (id ipcache.Identity, ok bool) {
 // should only be used for reading.
 func (d *Daemon) GetK8sStore(name string) k8scache.Store {
 	return d.k8sWatcher.GetStore(name)
+}
+
+func (d *Daemon) GetL3L4IngressPolicies(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch {
+	ctx := &policy.SearchContext{From: from, To: to, DPorts: ports}
+	return d.policy.MatchIngressRLocked(ctx)
+}
+
+func (d *Daemon) GetL3L4EgressPolicies(from, to labels.LabelArray, ports []*models.Port) []policy.L4PolicyMatch {
+	ctx := &policy.SearchContext{From: from, To: to, DPorts: ports}
+	return d.policy.MatchEgressRLocked(ctx)
 }
